@@ -1,0 +1,11 @@
+# Don't push macOS system files
+.DS_Store
+
+# Don't push dependencies (they can be reinstalled)
+node_modules/
+
+# Don't push environment variables (security)
+.env
+
+# Uploaded files (you probably don’t want to check these in)
+public/uploads/
