@@ -9,3 +9,24 @@ node_modules/
 
 # Uploaded files (you probably don’t want to check these in)
 public/uploads/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Env
+*.env
+
+# VSCode
+.vscode/
+
+# Frontend build
+/frontend/build/
+/frontend/node_modules/
+
+# Backend uploads
+/backend/uploads/*
+
+# OS files
+.DS_Store

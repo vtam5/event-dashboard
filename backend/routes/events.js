@@ -1,179 +1,102 @@
 // backend/routes/events.js
-
 const express = require('express');
-const { body, param, validationResult } = require('express-validator');
-const upload = require('../middleware/upload');
-const db = require('../db');
-const fs = require('fs');
-const path = require('path');
+const pool    = require('../db');
+const multer  = require('multer');
+const router  = express.Router();
 
-const router = express.Router();
+// Multer setup (uploads folder)
+const upload = multer({ dest: 'uploads/' });
 
-/**
- * GET /api/events
- * Fetch all events, ordered by date descending
- */
-router.get('/', async (req, res) => {
+// Simple admin-check (replace with real auth later)
+const ADMIN_USERNAME = 'admin';
+const ADMIN_PASSWORD = 'test123';
+async function checkAdmin(req, res, next) {
+  const [rows] = await pool.query(
+    'SELECT 1 FROM Admins WHERE username=? AND password=?',
+    [ADMIN_USERNAME, ADMIN_PASSWORD]
+  );
+  if (!rows.length) return res.status(403).json({ error: 'Not authorized' });
+  next();
+}
+
+// GET /api/events?admin=1
+router.get('/', async (req, res, next) => {
   try {
-    const [rows] = await db.query('SELECT * FROM Events ORDER BY date DESC');
-    return res.json(rows);
+    const isAdmin = req.query.admin === '1';
+    let sql = `
+      SELECT e.eventId, e.name, e.date, e.time, e.location,
+             e.description, e.flyerPath, e.isPublished,
+             COUNT(r.submissionId) AS participantCount
+      FROM Events e
+      LEFT JOIN Responses r ON e.eventId=r.eventId
+    `;
+    if (!isAdmin) {
+      sql += ` WHERE e.isPublished='public' `;
+    }
+    sql += ` GROUP BY e.eventId ORDER BY e.eventId DESC`;
+    const [rows] = await pool.query(sql);
+    res.json(rows);
   } catch (err) {
-    console.error('Failed to fetch events:', err);
-    return res.status(500).json({ error: 'Failed to fetch events' });
+    next(err);
   }
 });
 
-/**
- * GET /api/events/:id
- * Fetch one event by ID
- */
-router.get(
-  '/:id',
-  param('id').isInt().withMessage('Event ID must be an integer'),
-  async (req, res) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
+// POST /api/events
+router.post('/', checkAdmin, async (req, res, next) => {
+  try {
+    const { name, date, time=null, location=null, description=null } = req.body;
+    if (!name || !date) {
+      return res.status(400).json({ error: 'Name and date required' });
+    }
+    const [r] = await pool.query(
+      `INSERT INTO Events
+         (name,date,time,location,description,flyerPath,isPublished,allowResponseEdit)
+       VALUES (?, ?, ?, ?, ?, NULL, 'draft', 0)`,
+      [name, date, time, location, description]
+    );
+    res.status(201).json({ eventId: r.insertId });
+  } catch (err) {
+    next(err);
+  }
+});
 
+// PUT /api/events/:id
+router.put('/:id', checkAdmin, async (req, res, next) => {
+  try {
     const { id } = req.params;
-    try {
-      const [rows] = await db.query('SELECT * FROM Events WHERE id = ?', [id]);
-      if (!rows.length) return res.status(404).json({ error: 'Event not found' });
-      return res.json(rows[0]);
-    } catch (err) {
-      console.error('Failed to fetch event:', err);
-      return res.status(500).json({ error: 'Failed to fetch event' });
+    const { name, date, time, location, description, isPublished, allowResponseEdit } = req.body;
+    const valid = ['draft','private','public'];
+    if (isPublished && !valid.includes(isPublished)) {
+      return res.status(400).json({ error: 'Invalid state' });
     }
+    await pool.query(
+      `UPDATE Events
+         SET name            = COALESCE(?,name),
+             date            = COALESCE(?,date),
+             time            = COALESCE(?,time),
+             location        = COALESCE(?,location),
+             description     = COALESCE(?,description),
+             isPublished     = COALESCE(?,isPublished),
+             allowResponseEdit = COALESCE(?,allowResponseEdit)
+       WHERE eventId = ?`,
+      [name,date,time,location,description,isPublished,allowResponseEdit,id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
   }
-);
+});
 
-/**
- * POST /api/events
- * Create a new event, with optional flyer upload
- */
-router.post(
-  '/',
-  upload.single('flyer'),
-  [
-    body('name').isString().notEmpty().withMessage('Name is required'),
-    body('date').isISO8601().withMessage('Date must be YYYY-MM-DD'),
-    body('time').isString().notEmpty().withMessage('Time is required'),
-    body('place').isString().notEmpty().withMessage('Place is required'),
-    body('description').optional().isString(),
-    body('isPublished').optional().isBoolean()
-  ],
-  async (req, res) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-
-    const flyerPath = req.file
-      ? `/uploads/${req.file.filename}`
-      : req.body.flyerPath || null;
-
-    const { name, date, time, place, description, isPublished } = req.body;
-
-    try {
-      const [result] = await db.query(
-        `INSERT INTO Events
-           (name, date, time, place, description, flyerPath, isPublished)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [name, date, time, place, description || null, flyerPath, isPublished ?? true]
-      );
-      return res.status(201).json({ id: result.insertId });
-    } catch (err) {
-      console.error('Failed to create event:', err);
-      return res.status(500).json({ error: 'Failed to create event' });
-    }
-  }
-);
-
-/**
- * PUT /api/events/:id
- * Update an existing event, optionally replacing its flyer
- */
-router.put(
-  '/:id',
-  upload.single('flyer'),
-  [
-    param('id').isInt().withMessage('Event ID must be an integer'),
-    body('name').optional().isString(),
-    body('date').optional().isISO8601(),
-    body('time').optional().isString(),
-    body('place').optional().isString(),
-    body('description').optional().isString(),
-    body('isPublished').optional().isBoolean()
-  ],
-  async (req, res) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-
+// DELETE /api/events/:id
+router.delete('/:id', checkAdmin, async (req, res, next) => {
+  try {
     const { id } = req.params;
-    const flyerPath = req.file
-      ? `/uploads/${req.file.filename}`
-      : req.body.flyerPath;
-
-    const { name, date, time, place, description, isPublished } = req.body;
-
-    try {
-      const [result] = await db.query(
-        `UPDATE Events
-           SET name = ?, date = ?, time = ?, place = ?, description = ?, flyerPath = ?, isPublished = ?
-         WHERE id = ?`,
-        [name, date, time, place, description || null, flyerPath, isPublished ?? true, id]
-      );
-      if (result.affectedRows === 0)
-        return res.status(404).json({ error: 'Event not found' });
-      return res.json({ message: 'Event updated' });
-    } catch (err) {
-      console.error('Failed to update event:', err);
-      return res.status(500).json({ error: 'Failed to update event' });
-    }
+    const [r] = await pool.query('DELETE FROM Events WHERE eventId=?', [id]);
+    if (!r.affectedRows) return res.status(404).json({ error: 'Not found' });
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
   }
-);
-
-/**
- * DELETE /api/events/:id
- * Deletes the DB record AND removes the associated flyer file from disk
- */
-router.delete(
-  '/:id',
-  param('id').isInt().withMessage('Event ID must be an integer'),
-  async (req, res) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-
-    const { id } = req.params;
-    let flyerPath;
-
-    // 1) Look up flyerPath
-    try {
-      const [rows] = await db.query('SELECT flyerPath FROM Events WHERE id = ?', [id]);
-      if (!rows.length) return res.status(404).json({ error: 'Event not found' });
-      flyerPath = rows[0].flyerPath;
-    } catch (err) {
-      console.error('Error fetching flyerPath:', err);
-      return res.status(500).json({ error: 'Failed to delete event' });
-    }
-
-    // 2) Delete file from disk if present
-    if (flyerPath) {
-      const relPath = flyerPath.replace(/^\//, '');               // e.g. "uploads/123.png"
-      const fullPath = path.join(__dirname, '..', '..', 'public', relPath);
-      fs.unlink(fullPath, err => {
-        if (err && err.code !== 'ENOENT') {
-          console.error('Failed to delete flyer file:', err);
-        }
-      });
-    }
-
-    // 3) Delete the DB record (cascades to questions & responses)
-    try {
-      const [result] = await db.query('DELETE FROM Events WHERE id = ?', [id]);
-      return res.json({ message: 'Event deleted' });
-    } catch (err) {
-      console.error('Failed to delete event:', err);
-      return res.status(500).json({ error: 'Failed to delete event' });
-    }
-  }
-);
+});
 
 module.exports = router;

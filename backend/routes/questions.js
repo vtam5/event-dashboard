@@ -1,102 +1,108 @@
 // backend/routes/questions.js
-
 const express = require('express');
-const { body, param, query, validationResult } = require('express-validator');
-const db = require('../db');
-const router = express.Router();
+const pool    = require('../db');
+const { body, param, validationResult } = require('express-validator');
 
-// GET all (filter by eventId)
+const router = express.Router({ mergeParams: true });
+
+// GET /api/events/:eventId/questions
 router.get(
   '/',
-  query('eventId').optional().isInt().withMessage('eventId must be an integer'),
-  async (req, res) => {
+  [ param('eventId').isInt().withMessage('Invalid eventId') ],
+  async (req, res, next) => {
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-    const { eventId } = req.query;
-    let sql = 'SELECT * FROM Questions';
-    const params = [];
-    if (eventId) { sql += ' WHERE eventId = ?'; params.push(eventId); }
-    const [rows] = await db.query(sql + ' ORDER BY id', params);
-    res.json(rows);
+    try {
+      const [rows] = await pool.execute(
+        'SELECT * FROM Questions WHERE eventId=? ORDER BY questionId',
+        [req.params.eventId]
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
   }
 );
 
-// GET one
-router.get(
-  '/:id',
-  param('id').isInt().withMessage('Question ID must be an integer'),
-  async (req, res) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-    const { id } = req.params;
-    const [rows] = await db.query('SELECT * FROM Questions WHERE id = ?', [id]);
-    if (!rows.length) return res.status(404).json({ error: 'Question not found' });
-    res.json(rows[0]);
-  }
-);
-
-// POST create
+// POST /api/events/:eventId/questions
 router.post(
   '/',
   [
-    body('eventId').isInt().withMessage('eventId must be an integer'),
-    body('questionText').isString().notEmpty().withMessage('questionText is required'),
-    body('fieldType')
-      .isIn(['text','email','number','select','checkbox'])
-      .withMessage('Invalid fieldType'),
-    body('options').optional().isString(),
+    param('eventId').isInt(),
+    body('questionText').trim().notEmpty(),
+    body('questionType')
+      .isIn(['text','textarea','checkbox','dropdown']),
     body('isRequired').optional().isBoolean()
   ],
-  async (req, res) => {
+  async (req, res, next) => {
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-    const { eventId, questionText, fieldType, options, isRequired } = req.body;
-    const [result] = await db.query(
-      `INSERT INTO Questions (eventId,questionText,fieldType,options,isRequired)
-       VALUES (?,?,?,?,?)`,
-      [eventId, questionText, fieldType, options||null, isRequired ?? true]
-    );
-    res.status(201).json({ id: result.insertId });
+    try {
+      const { questionText, questionType, isRequired=false } = req.body;
+      const [r] = await pool.execute(
+        `INSERT INTO Questions
+           (eventId,questionText,questionType,isRequired)
+         VALUES (?,?,?,?)`,
+        [req.params.eventId, questionText, questionType, isRequired]
+      );
+      res.status(201).json({ questionId: r.insertId });
+    } catch (err) {
+      next(err);
+    }
   }
 );
 
-// PUT update
+// PUT /api/events/:eventId/questions/:questionId
 router.put(
-  '/:id',
+  '/:questionId',
   [
-    param('id').isInt().withMessage('Question ID must be an integer'),
-    body('questionText').optional().isString(),
-    body('fieldType').optional().isIn(['text','email','number','select','checkbox']),
-    body('options').optional().isString(),
+    param('eventId').isInt(),
+    param('questionId').isInt(),
+    body('questionText').trim().notEmpty(),
+    body('questionType')
+      .isIn(['text','textarea','checkbox','dropdown']),
     body('isRequired').optional().isBoolean()
   ],
-  async (req, res) => {
+  async (req, res, next) => {
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-    const { id } = req.params;
-    const { questionText, fieldType, options, isRequired } = req.body;
-    const [result] = await db.query(
-      `UPDATE Questions
-         SET questionText=?, fieldType=?, options=?, isRequired=?
-       WHERE id=?`,
-      [questionText, fieldType, options||null, isRequired ?? true, id]
-    );
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Question not found' });
-    res.json({ message: 'Question updated' });
+    try {
+      const { questionText, questionType, isRequired } = req.body;
+      const [r] = await pool.execute(
+        `UPDATE Questions
+           SET questionText=?, questionType=?, isRequired=?
+         WHERE questionId=? AND eventId=?`,
+        [questionText, questionType, isRequired, req.params.questionId, req.params.eventId]
+      );
+      if (!r.affectedRows) return res.status(404).json({ error: 'Not found' });
+      res.json({ updated: r.affectedRows });
+    } catch (err) {
+      next(err);
+    }
   }
 );
 
-// DELETE
+// DELETE /api/events/:eventId/questions/:questionId
 router.delete(
-  '/:id',
-  param('id').isInt().withMessage('Question ID must be an integer'),
-  async (req, res) => {
+  '/:questionId',
+  [
+    param('eventId').isInt(),
+    param('questionId').isInt()
+  ],
+  async (req, res, next) => {
     const errs = validationResult(req);
     if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
-    const { id } = req.params;
-    const [result] = await db.query('DELETE FROM Questions WHERE id = ?', [id]);
-    if (result.affectedRows === 0) return res.status(404).json({ error: 'Question not found' });
-    res.json({ message: 'Question deleted' });
+    try {
+      const [r] = await pool.execute(
+        `DELETE FROM Questions
+         WHERE questionId=? AND eventId=?`,
+        [req.params.questionId, req.params.eventId]
+      );
+      if (!r.affectedRows) return res.status(404).json({ error: 'Not found' });
+      res.json({ deleted: r.affectedRows });
+    } catch (err) {
+      next(err);
+    }
   }
 );
 

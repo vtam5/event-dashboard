@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Event Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans p-6">
+  <div class="max-w-4xl mx-auto">
+    <h1 class="text-3xl font-bold mb-4">Event Dashboard</h1>
+    <button id="add-event-btn"
+      class="mb-6 bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700">
+      + Add Event
+    </button>
+    <ul id="events" class="space-y-4"></ul>
+  </div>
+
+  <!-- Event Modal -->
+  <div id="event-modal"
+       class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+    <div class="bg-white rounded-lg w-full max-w-2xl p-6 max-h-[90vh] overflow-auto">
+      <h2 id="modal-title" class="text-2xl font-semibold mb-4">Add Event</h2>
+      <form id="event-form" class="space-y-4">
+        <input type="hidden" name="eventId" />
+        <!-- Basic fields -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label class="block font-medium">Name</label>
+            <input name="name" required class="w-full border rounded px-3 py-2" />
+          </div>
+          <div>
+            <label class="block font-medium">Date</label>
+            <input name="date" type="date" required class="w-full border rounded px-3 py-2" />
+          </div>
+          <div>
+            <label class="block font-medium">Time</label>
+            <input name="time" type="time" class="w-full border rounded px-3 py-2" />
+          </div>
+          <div>
+            <label class="block font-medium">Location</label>
+            <input name="location" class="w-full border rounded px-3 py-2" />
+          </div>
+        </div>
+        <div>
+          <label class="block font-medium">Description</label>
+          <textarea name="description" rows="3" class="w-full border rounded px-3 py-2"></textarea>
+        </div>
+        <div class="flex items-center space-x-4">
+          <label class="inline-flex items-center">
+            <input type="checkbox" name="isPublished" class="form-checkbox" />
+            <span class="ml-2">Published</span>
+          </label>
+          <div>
+            <label class="block font-medium">Flyer</label>
+            <input type="file" name="flyer" accept="image/*" class="mt-1" />
+            <div id="flyer-preview-container" class="mt-2 hidden">
+              <p class="text-sm text-gray-600" id="flyer-filename"></p>
+              <img id="flyer-preview" class="max-w-full max-h-48 border rounded" />
+            </div>
+          </div>
+        </div>
+        <div>
+          <h3 class="text-xl font-semibold mb-2">Questions</h3>
+          <div id="question-list" class="space-y-2"></div>
+          <button type="button" id="add-question-btn"
+            class="mt-2 bg-blue-500 text-white px-3 py-1 rounded hover:bg-blue-600">
+            + Add Question
+          </button>
+        </div>
+        <div class="flex justify-end space-x-4 mt-6">
+          <button type="button" id="cancel-btn"
+            class="px-4 py-2 rounded border hover:bg-gray-100">Cancel</button>
+          <button type="submit"
+            class="px-4 py-2 rounded bg-green-600 text-white hover:bg-green-700">
+            Save Event
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const API = '/api';
+    const eventsEl = document.getElementById('events');
+    const modal = document.getElementById('event-modal');
+    const form = document.getElementById('event-form');
+    const qList = document.getElementById('question-list');
+    const addQBtn = document.getElementById('add-question-btn');
+    const cancelBtn = document.getElementById('cancel-btn');
+    const modalTitle = document.getElementById('modal-title');
+    const addEventBtn = document.getElementById('add-event-btn');
+
+    const flyerInput = form.querySelector('[name="flyer"]');
+    const previewContainer = document.getElementById('flyer-preview-container');
+    const previewImg = document.getElementById('flyer-preview');
+    const previewName = document.getElementById('flyer-filename');
+
+    flyerInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) {
+        previewContainer.classList.add('hidden');
+        return;
+      }
+      previewName.textContent = file.name;
+      const reader = new FileReader();
+      reader.onload = () => {
+        previewImg.src = reader.result;
+        previewContainer.classList.remove('hidden');
+      };
+      reader.readAsDataURL(file);
+    });
+
+    async function loadEvents() {
+      eventsEl.innerHTML = '<li>Loading…</li>';
+      const res = await fetch(`${API}/events?admin=1`);
+      const list = await res.json();
+      eventsEl.innerHTML = '';
+      for (const e of list) {
+        const li = document.createElement('li');
+        li.className = 'bg-white p-4 rounded shadow flex justify-between items-center';
+        li.innerHTML = `
+          <div>
+            <div class="font-semibold">#${e.eventId} - ${e.name}</div>
+            <div class="text-sm text-gray-600">${e.date} ${e.time||''}</div>
+          </div>
+          <div class="space-x-2">
+            <a href="#" data-id="${e.eventId}" class="responses-btn bg-indigo-500 text-white px-3 py-1 rounded">Responses</a>
+            <a href="/event.html?eventId=${e.eventId}" class="bg-blue-500 text-white px-3 py-1 rounded">Form</a>
+            <button data-id="${e.eventId}" class="edit-btn bg-yellow-400 px-3 py-1 rounded">Edit</button>
+            <button data-id="${e.eventId}" class="delete-btn bg-red-500 text-white px-3 py-1 rounded">Delete</button>
+          </div>`;
+        eventsEl.append(li);
+      }
+
+      document.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.onclick = async () => {
+          if (!confirm('Delete this event?')) return;
+          await fetch(`${API}/events/${btn.dataset.id}`, {method:'DELETE'});
+          loadEvents();
+        };
+      });
+
+      document.querySelectorAll('.edit-btn').forEach(btn => {
+        btn.onclick = () => openModal('edit', btn.dataset.id);
+      });
+
+      document.querySelectorAll('.responses-btn').forEach(btn => {
+        btn.onclick = async () => {
+          const eventId = btn.dataset.id;
+          const res = await fetch(`${API}/events/${eventId}/responses`);
+          const list = await res.json();
+
+          if (list.length === 0) {
+            alert('No responses yet for this event.');
+            return;
+          }
+
+          let msg = '';
+          for (const p of list) {
+            msg += `👤 ${p.participantName} (${p.participantEmail})\n`;
+            for (const a of p.answers) {
+              msg += `  - ${a.questionText}: ${a.answerText}\n`;
+            }
+            msg += '\n';
+          }
+
+          alert(msg);
+        };
+      });
+    }
+
+    async function openModal(mode, id=null) {
+      form.reset();
+      qList.innerHTML = '';
+      previewContainer.classList.add('hidden');
+      modalTitle.textContent = mode==='edit' ? 'Edit Event' : 'Add Event';
+      form.eventId.value = '';
+
+      if (mode==='edit') {
+        const [evt, qs] = await Promise.all([
+          fetch(`${API}/events?admin=1`).then(r=>r.json()).then(arr=>arr.find(x=>x.eventId==id)),
+          fetch(`${API}/events/${id}/questions`).then(r=>r.json())
+        ]);
+        form.eventId.value = id;
+        form.name.value = evt.name;
+        form.date.value = evt.date;
+        form.time.value = evt.time||'';
+        form.location.value = evt.location||'';
+        form.description.value = evt.description||'';
+        form.isPublished.checked = evt.isPublished==='public';
+        qs.forEach(q=> addQuestionField(q));
+      }
+
+      modal.classList.remove('hidden');
+    }
+
+    addEventBtn.onclick = () => openModal('add');
+    cancelBtn.onclick = () => modal.classList.add('hidden');
+
+    function addQuestionField(qObj={}) {
+      const idx = Date.now() + Math.random();
+      const wrapper = document.createElement('div');
+      wrapper.className = 'flex items-center space-x-2';
+      wrapper.innerHTML = `
+        <input type="hidden" name="q_id_${idx}" value="${qObj.questionId||''}" />
+        <input name="q_text_${idx}" placeholder="Question text"
+               value="${qObj.questionText||''}" required
+               class="border rounded px-2 py-1 flex-1" />
+        <select name="q_type_${idx}" class="border rounded px-2 py-1">
+          ${['text','textarea','checkbox','dropdown'].map(t=>
+            `<option ${qObj.type===t?'selected':''} value="${t}">${t}</option>`
+          ).join('')}
+        </select>
+        <label class="inline-flex items-center">
+          <input type="checkbox" name="q_req_${idx}" ${qObj.isRequired?'checked':''} />
+          <span class="ml-1 text-sm">Required</span>
+        </label>
+        <button type="button" class="text-red-500">✕</button>`;
+      wrapper.querySelector('button').onclick = () => wrapper.remove();
+      qList.append(wrapper);
+    }
+    addQBtn.onclick = () => addQuestionField();
+
+    form.onsubmit = async e => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const isEdit = !!fd.get('eventId');
+      let eid = fd.get('eventId');
+
+      const payload = {
+        name: fd.get('name'),
+        date: fd.get('date'),
+        time: fd.get('time'),
+        location: fd.get('location'),
+        description: fd.get('description'),
+        isPublished: fd.get('isPublished') ? 'public':'draft'
+      };
+      const evtRes = await fetch(`${API}/events${isEdit?'/'+eid:''}`, {
+        method: isEdit?'PUT':'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const evtJson = await evtRes.json();
+      eid = isEdit? eid : evtJson.eventId;
+
+      const file = fd.get('flyer');
+      if (file && file.name) {
+        const mfd = new FormData(); mfd.append('flyer', file);
+        await fetch(`${API}/events/${eid}/flyer`, { method:'POST', body:mfd });
+      }
+
+      const toCreate=[], toUpdate=[];
+      qList.querySelectorAll('div').forEach(div=>{
+        const id = div.querySelector('[name^="q_id_"]').value;
+        const text = div.querySelector('[name^="q_text_"]').value;
+        const type = div.querySelector('[name^="q_type_"]').value;
+        const reqd = div.querySelector('[name^="q_req_"]').checked;
+        if(id) toUpdate.push({questionId:id, questionText:text, type, isRequired:reqd});
+        else   toCreate.push({questionText:text, type, isRequired:reqd});
+      });
+      await Promise.all(toUpdate.map(q=> fetch(`${API}/events/${eid}/questions/${q.questionId}`,{
+        method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(q)
+      })));
+      await Promise.all(toCreate.map(q=> fetch(`${API}/events/${eid}/questions`,{
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(q)
+      })));
+
+      modal.classList.add('hidden'); loadEvents();
+    };
+
+    loadEvents();
+  });
+  </script>
+</body>
+</html>
