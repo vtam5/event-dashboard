@@ -14,13 +14,19 @@ const requireAdmin = (req, res, next) => {
   return res.status(403).json({ error: 'admin=1 required' });
 };
 
-// List
+// =======================
+// Event list (public)
+// =======================
 router.get('/', eventsCtrl.listEvents);
 
-// Create (admin only)
+// =======================
+// Create Event (admin)
+// =======================
 router.post('/', requireAdmin, eventsCtrl.createEvent);
 
-// CSV export (falls back to inline exporter if controller fn not present)
+// =======================
+// CSV export (admin)
+// =======================
 router.get(
   '/export',
   eventsCtrl.exportCSV
@@ -54,7 +60,11 @@ router.get(
     })
 );
 
-// Reorder (admin only) — place BEFORE the :id route
+router.get('/:id(\\d+)', eventsCtrl.getEvent);
+
+// =======================
+// Reorder Events (admin)
+// =======================
 router.put(
   '/reorder',
   [
@@ -69,12 +79,10 @@ router.put(
     try {
       const { order } = req.body;
 
-      // Check duplicates
       if (new Set(order).size !== order.length) {
         return res.status(400).json({ success: false, error: 'Duplicate IDs in order' });
       }
 
-      // Ensure all IDs exist
       const [existing] = await conn.query(
         'SELECT eventId FROM Events WHERE eventId IN (?)',
         [order]
@@ -99,14 +107,157 @@ router.put(
   }
 );
 
-// Update (admin only)
+// =======================
+// Public: Get Single Event
+// =======================
+router.get(
+  '/:id(\\d+)',
+  [param('id').isInt().toInt(), checkValidation],
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const [rows] = await pool.query(
+        'SELECT * FROM Events WHERE eventId = ? LIMIT 1',
+        [id]
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+      res.json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// =======================
+// Admin: Get Participants
+// =======================
+router.get(
+  '/:id(\\d+)/participants',
+  [requireAdmin, param('id').isInt().toInt(), checkValidation],
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const [rows] = await pool.query(
+        `SELECT * FROM Participants WHERE eventId = ? ORDER BY createdAt DESC`,
+        [id]
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// =======================
+// Public: Submit Response
+// =======================
+router.post(
+  '/:id(\\d+)/responses',
+  [param('id').isInt().toInt(), checkValidation],
+  async (req, res, next) => {
+    try {
+      const eventId = +req.params.id;
+      const { firstName, lastName, email, phone, homeNumber, street, apartment, city, state, zipcode, answers } = req.body;
+
+      // 1️⃣ Create or find participant
+      const [participantResult] = await pool.query(
+        `INSERT INTO Participants 
+          (firstName, lastName, email, phone, homeNumber, street, apartment, city, state, zipcode)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE participantId = LAST_INSERT_ID(participantId)`,
+        [firstName, lastName, email, phone, homeNumber, street, apartment, city, state, zipcode]
+      );
+
+      const participantId = participantResult.insertId;
+
+      // 2️⃣ Insert into Responses table
+      const fullName = [firstName, lastName].filter(Boolean).join(' ');
+      const [responseResult] = await pool.query(
+        'INSERT INTO Responses (eventId, name, participantId) VALUES (?, ?, ?)',
+        [eventId, fullName, participantId]
+      );
+
+      const responseId = responseResult.insertId;
+
+      // 3️⃣ Insert answers (if using a separate Answers table)
+      if (Array.isArray(answers) && answers.length > 0) {
+        const answerRows = answers.map(a => [responseId, a.questionId, a.value]);
+        await pool.query(
+          'INSERT INTO Answers (responseId, questionId, answerValue) VALUES ?',
+          [answerRows]
+        );
+      }
+
+      res.json({ success: true, responseId });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// =======================
+// Admin: Get Responses
+// =======================
+router.get(
+  '/:id(\\d+)/responses',
+  [requireAdmin, param('id').isInt().toInt(), checkValidation],
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const [rows] = await pool.query(
+        'SELECT * FROM Responses WHERE eventId = ? ORDER BY createdAt DESC',
+        [id]
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+router.get(
+  '/:id(\\d+)',
+  [param('id').isInt().toInt(), checkValidation],
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const v = String(req.query.admin || '').toLowerCase();
+      const isAdmin = (v === '1' || v === 'true');
+
+      let sql = `SELECT eventId, name, date, time, location, description, status, createdAt
+                 FROM Events WHERE eventId = ?`;
+      const params = [id];
+
+      if (!isAdmin) {
+        sql += ` AND status = 'published'`;
+      }
+
+      const [rows] = await pool.query(sql, params);
+      if (!rows.length) {
+        return res.status(404).json({ error: 'Event not found' });
+      }
+
+      res.json(rows[0]);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// =======================
+// Update Event (admin)
+// =======================
 router.put(
   '/:id(\\d+)',
   [requireAdmin, param('id').isInt().toInt(), checkValidation],
   eventsCtrl.updateEvent
 );
 
-// Delete (admin only)
+// =======================
+// Delete Event (admin)
+// =======================
 router.delete(
   '/:id(\\d+)',
   [requireAdmin, param('id').isInt().toInt(), checkValidation],

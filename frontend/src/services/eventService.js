@@ -1,164 +1,188 @@
 // src/services/eventService.js
-import api, { downloadCSV } from './api'
+import api, { downloadCSV, uploadFlyer as uploadFlyerApi } from './api';
+import axios from 'axios';
 
-// ---------- helpers ----------
-function normalizeEvent(e = {}) {
-  const eventId = e.eventId ?? e.id
-  const out = { ...e, eventId }
-  delete out.id
-  return out
-}
+// helper to add ?admin=1
+const adminParams = (admin) => (admin ? { admin: 1 } : undefined);
 
-// ---------- lists / single ----------
-/** List events (admin or public). Supports sort + when. */
-export const listEvents = async ({ admin = false, sort, when } = {}) => {
-  const params = {}
-  if (admin) params.admin = 1
-  if (sort)  params.sort  = sort
-  if (when)  params.when  = when // 'active' | 'archived' | 'upcoming' | 'past' | 'all'
-  const res = await api.get('/api/events', { params })
-  return Array.isArray(res.data) ? res.data.map(normalizeEvent) : []
-}
-
-/** Legacy: get via list (admin side) */
-export const getEvent = async (id, { admin = false } = {}) => {
-  const list = await listEvents({ admin, when: admin ? 'all' : 'active' })
-  return list.find(e => String(e.eventId) === String(id)) || null
-}
-
-/** Explicit single fetchers for clarity */
-export const fetchEventAdmin  = async (eventId) => getEvent(eventId, { admin: true })
-export const fetchEventPublic = async (eventId) => getEvent(eventId, { admin: false })
-
-// ---------- create / update / delete ----------
-export const createEvent = async (payload) => {
-  const res = await api.post('/api/events', payload)
-  return normalizeEvent(res.data)
-}
-
-export async function updateEvent(eventId, payload) {
-  const out = { ...payload };
-  if (typeof out.isPublished !== 'undefined') {
-    const v = String(out.isPublished).toLowerCase();
-    out.isPublished = (v === 'public' || v === 'true') ? 'public' : 'draft';
-  }
-  if (typeof out.status !== 'undefined') {
-    const v = String(out.status).toLowerCase();
-    out.status = (v === 'open') ? 'open' : 'closed';
-  }
-  const { data } = await api.put(`/api/events/${eventId}`, out);
+/* ─────────────────────────────  EVENTS  ───────────────────────────── */
+export async function listEvents({ admin = false, when = 'all', sort = 'eventDate' } = {}) {
+  const params = { when, sort, ...(admin ? { admin: 1 } : {}) };
+  const { data } = await api.get('/api/events', { params });
   return data;
 }
 
-export const deleteEvent = async (id) => {
-  const res = await api.delete(`/api/events/${id}`, { params: { admin: 1 } })
-  return res.data
+export async function createEvent(payload, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.post('/api/events', payload, { params });
+  return data;
 }
 
-// ---------- flyer / upload ----------
-/** Old helper kept for compatibility with EventEditor uploadFlyer(eventId, file) */
-export const uploadFlyer = async (eventId, file) => {
-  const form = new FormData()
-  form.append('flyer', file)
-  const res = await api.post(`/api/events/${eventId}/upload`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  })
-  return res.data // { flyerPath }
+export async function updateEvent(eventId, payload, { admin = false } = {}) {
+  const params = admin ? { admin: 1 } : undefined;
+  const out = { ...payload };
+  if (out.status !== undefined) out.status = String(out.status).toLowerCase();
+  const { data } = await api.put(`/api/events/${eventId}`, out, { params });
+  return data;
 }
 
-/** New generic upload used by EventFormFields */
-export const uploadFile = async (file) => {
-  const form = new FormData()
-  form.append('file', file)
-  const res = await api.post(`/api/upload`, form, {
-    headers: { 'Content-Type': 'multipart/form-data' }
-  })
-  return res.data // { path, flyerPath? }
+export async function deleteEvent(eventId, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.delete(`/api/events/${eventId}`, { params });
+  return data;
 }
 
-// ---------- ordering / export ----------
-export const reorderEvents = async (orderedIds) => {
-  const res = await api.put('/api/events/reorder', { order: orderedIds }, { params: { admin: 1 } })
-  return res.data
+export async function reorderEvents(order, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.put('/api/events/reorder', { order }, { params });
+  return data;
 }
 
-export const exportEventsCSV = async () =>
-  downloadCSV('/api/events/export', { params: { admin: 1 }, filename: 'events.csv' })
-
-// ---------- responses (participants) ----------
-/** Admin-only GET in backend; we always send admin=1 */
-export const fetchEventResponses = async (eventId, params = {}) => {
-  const res = await api.get(`/api/events/${eventId}/responses`, {
-    params: { admin: 1, ...params }
-  })
-  return res.data || []
+export async function exportEventsCSV({ admin = false } = {}) {
+  const params = adminParams(admin);
+  return downloadCSV('/api/events/export', { params, filename: 'events.csv' });
 }
 
-/** Public submit (single definition) */
-export const submitResponse = async (eventId, payload) => {
-  const res = await api.post(`/api/events/${eventId}/responses`, payload)
-  return res.data // { submissionId }
+// Backend has no GET /events/:id; derive from list()
+export async function getEvent(eventId, { admin = false } = {}) {
+  const all = await listEvents({ admin, when: 'all' });
+  return all.find(e => Number(e.eventId) === Number(eventId)) || null;
 }
 
-/** Single response detail (for participant drawer / view) */
-export const fetchResponseDetail = async (eventId, submissionId) => {
-  const res = await api.get(`/api/events/${eventId}/responses/${submissionId}`, {
-    params: { admin: 1 }
-  })
-  return res.data
+// Aliases used around the app
+export const fetchEvent = getEvent;
+export async function fetchEventPublic(eventId) {  // public view (open/closed only)
+  return getEvent(eventId, { admin: false });
+}
+export async function fetchEventAdmin(eventId) {   // admin view (all statuses)
+  return getEvent(eventId, { admin: true });
 }
 
-/** Alias to satisfy older imports in ParticipantsDrawer */
-export const fetchParticipantDetails = fetchResponseDetail
-
-// ---------- questions CRUD ----------
-export const fetchQuestions = async (eventId) => {
-  const res = await api.get(`/api/events/${eventId}/questions`)
-  return res.data || []
+/* ───────────────────────────  QUESTIONS  ─────────────────────────── */
+export async function fetchQuestions(eventId, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.get(`/api/events/${eventId}/questions`, { params });
+  return data;
 }
 
-export const createQuestion = async (eventId, payload) => {
-  const res = await api.post(`/api/events/${eventId}/questions`, payload)
-  return res.data
+export async function fetchQuestionOptions(eventId, questionId) {
+  if (!questionId || !Number.isInteger(questionId)) return [];
+  const { data } = await api.get(`/api/events/${eventId}/questions/${questionId}/options`);
+  return data;
 }
 
-export const updateQuestion = async (eventId, questionId, payload) => {
-  const res = await api.put(`/api/events/${eventId}/questions/${questionId}`, payload)
-  return res.data
+export async function createQuestion(eventId, payload, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.post(`/api/events/${eventId}/questions`, payload, { params });
+  return data;
 }
 
-export const deleteQuestion = async (eventId, questionId) => {
-  const res = await api.delete(`/api/events/${eventId}/questions/${questionId}`)
-  return res.data
+export async function updateQuestion(eventId, questionId, payload, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.put(`/api/events/${eventId}/questions/${questionId}`, payload, { params });
+  return data;
 }
 
-// options
-export const addQuestionOption = async (eventId, questionId, optionText) => {
-  const res = await api.post(
+export async function deleteQuestion(eventId, questionId, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.delete(`/api/events/${eventId}/questions/${questionId}`, { params });
+  return data;
+}
+
+// If you have options endpoints, keep these; otherwise they can remain unused.
+export async function addQuestionOption(eventId, questionId, optionText) {
+  const { data } = await api.post(
     `/api/events/${eventId}/questions/${questionId}/options`,
-    { optionText }
-  )
-  return res.data
+    { optionText } // ✅ must match backend validator
+  );
+  return data; // should include { id, questionId, optionText }
 }
 
-export const updateQuestionOption = async (eventId, questionId, optionId, optionText) => {
-  const res = await api.put(
+export async function updateQuestionOption(eventId, questionId, optionId, optionText) {
+  const { data } = await api.put(
     `/api/events/${eventId}/questions/${questionId}/options/${optionId}`,
-    { optionText }
-  )
-  return res.data
+    { optionText } // ✅ must match backend validator
+  );
+  return data; // { updated: 1 } or { success: true }
 }
-
-export const deleteQuestionOption = async (eventId, questionId, optionId) => {
-  const res = await api.delete(
+export async function deleteQuestionOption(eventId, questionId, optionId) {
+  const { data } = await api.delete(
     `/api/events/${eventId}/questions/${questionId}/options/${optionId}`
-  )
-  return res.data
+  );
+  return data; // { deleted: 1 } or { success: true }
+}
+/* ──────────────────────────  RESPONSES (admin)  ────────────────────────── */
+export async function fetchEventResponses(eventId, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.get(`/api/events/${eventId}/responses`, { params });
+  return data;
 }
 
-// ---------- legacy single fetch kept for compatibility ----------
-export const fetchEvent = async (eventId) => {
-  const res = await api.get(`/api/events`, { params: { admin: 1 } })
-  const all = res.data || []
-  return all.find(e => String(e.eventId) === String(eventId) || String(e.id) === String(eventId))
+export async function fetchResponseDetail(eventId, responseId, { admin = false } = {}) {
+  const params = adminParams(admin);
+  const { data } = await api.get(`/api/events/${eventId}/responses/${responseId}`, { params });
+  return data;
+}
+
+/* ─────────────────────  RESPONSES (public token view)  ─────────────────── */
+export async function fetchResponseByToken(eventId, responseId, token) {
+  const headers = { 'x-edit-token': token };
+  const { data } = await api.get(`/api/events/${eventId}/responses/${responseId}/view`, { headers });
+  return data;
+}
+
+// Some UIs expect this name — alias it to the function above
+export { fetchResponseByToken as getResponseByToken };
+
+/** Participant-centric list (built from admin list) */
+export async function fetchParticipantDetails(eventId, { admin = false } = {}) {
+  const rows = await fetchEventResponses(eventId, { admin });
+  return rows.map(r => ({
+    submissionId: r.submissionId,
+    responseId: r.responseId,
+    eventId: r.eventId,
+    createdAt: r.createdAt,
+    firstName: r.participant?.firstName ?? '',
+    lastName:  r.participant?.lastName  ?? '',
+    email:     r.participant?.email     ?? '',
+    phone:     r.participant?.phone     ?? '',
+    answers:   r.answers ?? [],
+  }));
+}
+
+/* ────────────────────────────  UPLOADS  ──────────────────────────── */
+export const uploadFlyer = uploadFlyerApi;
+
+/* ─────  RESPONSE create/edit/delete (legacy imports expect from this file) ───── */
+export async function submitResponse(eventId, {
+  firstName,
+  lastName,
+  email,
+  phone,
+  homeNumber,
+  street,
+  apartment,
+  city,
+  state,
+  zipcode,
+  answers
+}) {
+  const { data } = await api.post(
+    `/api/events/${eventId}/responses`,
+    {
+      firstName,
+      lastName,
+      email,
+      phone,
+      homeNumber,
+      street,
+      apartment,
+      city,
+      state,
+      zipcode,
+      answers
+    },
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+  return data;
 }

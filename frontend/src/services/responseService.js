@@ -1,86 +1,92 @@
 // frontend/src/services/responseService.js
-import api, { downloadCSV } from './api'
+import api from './api';
+import { savedResponse } from '../hooks/useSavedResponse';
 
-// ------- CRUD -------
-export const listResponses = (eventId) =>
-  api.get(`/api/events/${eventId}/responses`).then(r => r.data)
-
-export const createResponse = (eventId, payload) =>
-  api.post(`/api/events/${eventId}/responses`, payload).then(r => r.data)
-
-export const updateResponse = (eventId, responseId, payload) =>
-  api.put(`/api/events/${eventId}/responses/${responseId}`, payload).then(r => r.data)
-
-export const deleteResponse = (eventId, responseId) =>
-  api.delete(`/api/events/${eventId}/responses/${responseId}`).then(r => r.data)
-
-// ------- CSV (events list, for Admin dashboard) -------
-export const exportEventsCSV = async () => {
-  try {
-    await downloadCSV(`/api/events/export`, { filename: 'events.csv' })
-  } catch {
-    await downloadCSV(`/api/events`, { filename: 'events.csv' })
-  }
-}
-
-// ------- Pretty CSV (one row per submission; question text as columns) -------
-export async function exportResponsesCSVPretty(eventId) {
-  // 1) questions (for headers + stable order)
-  const questions = await api.get(`/api/events/${eventId}/questions`).then(r => r.data || [])
-  const qOrder = questions.map(q => ({
-    id: String(q.questionId ?? q.id),
-    text: q.questionText || `Question ${q.questionId ?? q.id}`
-  }))
-
-  // 2) responses
-  const responses = await api.get(`/api/events/${eventId}/responses`).then(r => r.data || [])
-
-  // 3) headers
-  const headers = [
-    'First Name',
-    'Last Name',
-    'Email',
-    ...qOrder.map(q => q.text)
-  ].map(csvEscape)
-
-  // 4) rows
-  const rows = responses.map(resp => {
-    const firstName = resp.firstName ?? resp.participantFirstName ?? ''
-    const lastName  = resp.lastName  ?? resp.participantLastName  ?? ''
-    const email     = resp.email     ?? resp.participantEmail     ?? ''
-
-    const ansMap = {}
-    ;(resp.answers || []).forEach(a => {
-      const qid = String(a.questionId ?? a.id)
-      ansMap[qid] = a.answerText ?? ''
+// ------- CRUD (admin list optional) -------
+export const listResponses = (eventId, { admin = false } = {}) =>
+  api
+    .get(`/api/events/${eventId}/responses`, {
+      params: admin ? { admin: 1 } : undefined
     })
+    .then(r => r.data);
 
-    const cells = [
-      csvEscape(firstName),
-      csvEscape(lastName),
-      csvEscape(email),
-      ...qOrder.map(q => csvEscape(ansMap[q.id] || ''))
-    ]
-    return cells.join(',')
-  })
+// ------- CREATE (normalized payload for backend) -------
+export async function createResponse(eventId, payload) {
+  // payload is expected from public form in "flat" shape, so normalize
+  const participant = {
+    firstName:  (payload.firstName  || '').trim(),
+    lastName:   (payload.lastName   || '').trim(),
+    email:      (payload.email      || '').trim(),
+    phone:      (payload.phone      || '').trim(),
+    homeNumber: (payload.homeNumber || '').trim(),
+    street:     (payload.street     || '').trim(),
+    apartment:  (payload.apartment  || '').trim(),
+    city:       (payload.city       || '').trim(),
+    state:      (payload.state      || '').trim(),
+    zipcode:    (payload.zipcode    || '').trim(),
+  };
 
-  // 5) download
-  const csv = [headers.join(','), ...rows].join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `responses-${eventId}.csv`
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  URL.revokeObjectURL(url)
+  const answers = Array.isArray(payload.answers) ? payload.answers : [];
+
+  const { data } = await api.post(
+    `/api/events/${eventId}/responses`,
+    { participant, answers }, // backend expects { participant, answers }
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+
+  // Optionally store token for later edits (public)
+  if (data?.editToken) {
+    savedResponse.set(eventId, data);
+  }
+
+  return data; // { submissionId, editToken, ... }
 }
 
-// helper: escape CSV safely
-function csvEscape(val) {
-  if (val == null) return ''
-  const s = String(val).replace(/\r?\n/g, ' ').trim()
-  return /[",]/.test(s) ? `"${s.replace(/"/g, '""')}"`
-                       : s
-}
+// ------- UPDATE -------
+export const updateResponse = async (
+  eventId,
+  responseId,
+  payload,
+  { admin = false, token } = {}
+) => {
+  const headers = {};
+  const params = admin ? { admin: 1 } : undefined;
+
+  if (!admin) {
+    const t = token || savedResponse.get(eventId)?.editToken;
+    if (t) headers['x-edit-token'] = t;
+  }
+
+  const { data } = await api.put(
+    `/api/events/${eventId}/responses/${responseId}`,
+    payload,
+    { headers, params }
+  );
+  return data;
+};
+
+// ------- DELETE -------
+export const deleteResponse = async (
+  eventId,
+  responseId,
+  { admin = false, token } = {}
+) => {
+  const headers = {};
+  const params = admin ? { admin: 1 } : undefined;
+
+  if (!admin) {
+    const t = token || savedResponse.get(eventId)?.editToken;
+    if (t) headers['x-edit-token'] = t;
+  }
+
+  const { data } = await api.delete(
+    `/api/events/${eventId}/responses/${responseId}`,
+    { headers, params }
+  );
+
+  if (data?.success && !admin) {
+    savedResponse.clear(eventId);
+  }
+
+  return data;
+};

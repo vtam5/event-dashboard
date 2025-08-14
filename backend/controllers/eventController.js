@@ -172,36 +172,58 @@ exports.createEvent = async (req, res, next) => {
 };
 
 // ---- 3) Update event -------------------------------------------------------
+// ---- 4) Update event -------------------------------------------------------
 exports.updateEvent = async (req, res, next) => {
   try {
-    const eventId = +req.params.eventId;
-    if (!eventId) return res.status(400).json({ error: 'Invalid eventId' });
+    const eventId = Number(req.params.id);      // <-- match route param :id
+    if (!Number.isInteger(eventId)) {
+      return res.status(400).json({ error: 'Invalid eventId' });
+    }
 
-    const allowedStatus = new Set(['private','open','closed','archived']);
+    // Allowed fields from body
+    const {
+      name,
+      date,
+      time,
+      endTime,                // <-- include endTime
+      location,
+      description,
+      status,                 // <-- use new status field
+      allowResponseEdit,
+      capacityLimit,
+      closeOn,
+      emailConfirmation,
+      flyerPath,             // if you allow changing flyer path
+      sortOrder,
+    } = req.body || {};
 
-    // Whitelist of updatable columns
-    const whitelist = [
-      'name','date','time','endTime','location','description','flyerPath',
-      'status','allowResponseEdit','capacityLimit','closeOn','emailConfirmation','sortOrder'
-    ];
+    // sanitize status if present
+    const allowedStatus = new Set(['private', 'open', 'closed', 'archived']);
+    const safeStatus =
+      typeof status === 'string' && allowedStatus.has(status.toLowerCase())
+        ? status.toLowerCase()
+        : undefined;
 
+    // Build SET clause
     const fields = [];
     const values = [];
-    for (const key of whitelist) {
-      if (req.body[key] !== undefined) {
-        if (key === 'status') {
-          const v = String(req.body[key]).toLowerCase();
-          if (!allowedStatus.has(v)) {
-            return res.status(400).json({ error: 'Invalid status' });
-          }
-          fields.push('status = ?');
-          values.push(v);
-        } else {
-          fields.push(`${key} = ?`);
-          values.push(req.body[key]);
-        }
-      }
-    }
+    const push = (col, val) => {
+      if (val !== undefined) { fields.push(`${col} = ?`); values.push(val); }
+    };
+
+    push('name', name);
+    push('date', date);
+    push('time', time);
+    push('endTime', endTime);
+    push('location', location);
+    push('description', description);
+    push('status', safeStatus);
+    push('allowResponseEdit', allowResponseEdit);
+    push('capacityLimit', capacityLimit);
+    push('closeOn', closeOn);
+    push('emailConfirmation', emailConfirmation);
+    push('flyerPath', flyerPath);
+    push('sortOrder', sortOrder);
 
     if (!fields.length) {
       return res.status(400).json({ error: 'No valid fields provided for update' });
@@ -223,6 +245,32 @@ exports.updateEvent = async (req, res, next) => {
     next(err);
   }
 };
+
+// ---- 2) Get single event ---------------------------------------------------
+exports.getEvent = async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) return res.status(400).json({ error: 'Invalid eventId' });
+
+    const isAdmin =
+      req.query.admin === '1' || req.query.admin === 'true' || req.query.admin === 1 || req.query.admin === true;
+
+    // If not admin, only return open/closed (publicly visible)
+    const [rows] = await pool.query(
+      isAdmin
+        ? 'SELECT * FROM Events WHERE eventId = ?'
+        : "SELECT * FROM Events WHERE eventId = ? AND status IN ('open','closed')",
+      [id]
+    );
+
+    if (!rows.length) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+};
+
+
 
 // ---- 4) Delete event -------------------------------------------------------
 exports.deleteEvent = async (req, res, next) => {

@@ -44,7 +44,7 @@ export default function AdminDashboard() {
 
   const onCreate = async (payload) => {
     try {
-      await createEvent(payload);
+      await createEvent(payload, { admin: true });
       modal.onClose();
       await load();
       toast({ status: 'success', title: 'Event created' });
@@ -66,7 +66,7 @@ export default function AdminDashboard() {
   const handleDelete = async (eventItem) => {
     if (!window.confirm(`Delete "${eventItem.name}"?`)) return;
     try {
-      await deleteEvent(eventItem.eventId);
+      await deleteEvent(eventItem.eventId, { admin: true });
       await load();
       toast({ status: 'success', title: 'Event deleted' });
     } catch (e) {
@@ -76,7 +76,7 @@ export default function AdminDashboard() {
   };
 
   const onReorder = async (orderedIds) => {
-    try { await reorderEvents(orderedIds); await load(); }
+    try { await reorderEvents(orderedIds, { admin: true }); }
     catch (e) { console.error(e); toast({ status: 'error', title: 'Reorder failed' }); }
   };
 

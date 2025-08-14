@@ -1,19 +1,19 @@
-// src/services/api.js
 import axios from 'axios';
 
 function buildBaseURL() {
-  let raw = (import.meta?.env?.VITE_API_BASE || '').trim();
+  // use VITE_API_BASE (single, canonical)
+  let raw = (import.meta.env?.VITE_API_BASE || '').trim();
 
-  // Default to localhost:3000 if nothing set
+  // default to backend dev port
   if (!raw) return 'http://localhost:3000';
 
-  // If user put ":3000" → make it "http(s)://<host>:3000"
+  // support ":3000" shorthand
   if (raw.startsWith(':')) {
     const { protocol, hostname } = window.location;
     return `${protocol}//${hostname}${raw}`;
   }
 
-  // If user put "localhost:3000" → add protocol
+  // add protocol if missing
   if (!/^https?:\/\//i.test(raw)) {
     const { protocol } = window.location;
     return `${protocol}//${raw}`;
@@ -23,15 +23,15 @@ function buildBaseURL() {
 }
 
 export const BASE_URL = buildBaseURL();
+console.log('[api] BASE_URL =', BASE_URL); // you can remove after confirming
 
 const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: '',              // <- use proxy
   withCredentials: false,
 });
-
 export default api;
 
-// ---- Helpers ----
+// Helpers (unchanged)
 export const downloadCSV = async (path, { params, filename = 'download.csv' } = {}) => {
   const res = await api.get(path, { params, responseType: 'blob' });
   const url = window.URL.createObjectURL(new Blob([res.data]));
@@ -42,22 +42,20 @@ export const downloadCSV = async (path, { params, filename = 'download.csv' } = 
   window.URL.revokeObjectURL(url);
 };
 
-// Generic public upload: POST /api/upload  -> { path: "/uploads/..." }
 export const uploadPublicFile = async (file, fieldName = 'file') => {
   const form = new FormData();
   form.append(fieldName, file);
   const res = await api.post('/api/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
-  return res.data; // { path }
+  return res.data;
 };
 
-// Event-specific upload (kept for screens that still use it, e.g. EventEditor)
 export const uploadFlyer = async (eventId, file) => {
   const form = new FormData();
   form.append('flyer', file);
   const res = await api.post(`/api/events/${eventId}/upload`, form, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
-  return res.data; // { flyerPath }
+  return res.data;
 };

@@ -5,7 +5,7 @@ exports.createOption = async (req, res, next) => {
   try {
     const eventId = +req.params.eventId;
     const questionId = +req.params.questionId;
-    const { label } = req.body;
+    const { optionText } = req.body;
 
     // Check that the question type supports options
     const [[question]] = await pool.query(
@@ -16,17 +16,16 @@ exports.createOption = async (req, res, next) => {
     if (!question) {
       return res.status(404).json({ error: 'Question not found' });
     }
-    if (!['multiple-choice', 'checkbox', 'dropdown'].includes(question.questionType)) {
+    if (!['multiple-choice', 'checkbox', 'dropdown', 'singleChoice', 'multipleChoice'].includes(question.questionType)) {
       return res.status(400).json({ error: 'Options only allowed for multiple-choice/checkbox/dropdown questions' });
     }
 
     const [result] = await pool.query(
-      'INSERT INTO QuestionOptions (questionId, label) VALUES (?, ?)',
-      [questionId, label]
+      'INSERT INTO QuestionOptions (questionId, optionText) VALUES (?, ?)',
+      [questionId, optionText]
     );
 
-    // ✅ Return { id: ... } to match test expectation
-    res.status(201).json({ id: result.insertId, questionId });
+    res.status(201).json({ id: result.insertId, questionId, optionText });
   } catch (err) {
     next(err);
   }
@@ -36,7 +35,7 @@ exports.listOptions = async (req, res, next) => {
   try {
     const questionId = +req.params.questionId;
     const [rows] = await pool.query(
-      'SELECT optionId AS id, questionId, label FROM QuestionOptions WHERE questionId = ? ORDER BY optionId',
+      'SELECT optionId AS id, questionId, optionText FROM QuestionOptions WHERE questionId = ? ORDER BY optionId',
       [questionId]
     );
     res.json(rows);
@@ -48,10 +47,10 @@ exports.listOptions = async (req, res, next) => {
 exports.updateOption = async (req, res, next) => {
   try {
     const optionId = +req.params.optionId;
-    const { label } = req.body;
+    const { optionText } = req.body;
     const [result] = await pool.query(
-      'UPDATE QuestionOptions SET label = ? WHERE optionId = ?',
-      [label, optionId]
+      'UPDATE QuestionOptions SET optionText = ? WHERE optionId = ?',
+      [optionText, optionId]
     );
     if (result.affectedRows === 0) {
       return res.status(404).json({ error: 'Option not found' });

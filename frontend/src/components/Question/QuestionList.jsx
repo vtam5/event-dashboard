@@ -7,7 +7,8 @@ import {
 import { Plus, Trash2, Save, Edit3 } from 'react-feather';
 import {
   fetchQuestions, createQuestion, updateQuestion, deleteQuestion,
-  addQuestionOption, updateQuestionOption, deleteQuestionOption
+  addQuestionOption, updateQuestionOption, deleteQuestionOption,
+  fetchQuestionOptions
 } from '../../services/eventService';
 
 const TEXT_TYPES = ['shortText','longText'];
@@ -175,13 +176,31 @@ export default function QuestionList({ eventId }) {
     setLoading(true);
     try {
       const rows = await fetchQuestions(eventId);
-      setItems(rows || []);
+  
+      // Only load options if the question is saved in DB
+      const withOptions = await Promise.all(
+        rows.map(async (q) => {
+          if (q?.questionId && Number.isInteger(q.questionId)) {
+            try {
+              const opts = await fetchQuestionOptions(eventId, q.questionId);
+              return { ...q, options: opts };
+            } catch (err) {
+              console.error(`Failed to load options for question ${q.questionId}`, err);
+              return { ...q, options: [] };
+            }
+          }
+          return { ...q, options: [] };
+        })
+      );
+  
+      setItems(withOptions || []);
     } catch (e) {
       toast({ status: 'error', title: 'Failed to load questions' });
     } finally {
       setLoading(false);
     }
   };
+  
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [eventId]);
 

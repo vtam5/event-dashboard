@@ -38,9 +38,11 @@ export default function ResponseTable({ eventId }) {
   };
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line
-  }, [eventId]);
+    if (!eventId) return
+    fetchEventResponses(eventId, { admin: true })
+      .then(setRows)
+      .catch(console.error)
+  }, [eventId])
 
   return (
     <Box>

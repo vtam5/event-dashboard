@@ -5,74 +5,55 @@ import {
   PopoverHeader, PopoverBody, PopoverFooter,
   Button, Switch, FormControl, FormLabel, Select, Stack, useToast
 } from '@chakra-ui/react';
-import { updateEvent } from '../../services/eventService'; // ✅ make sure this exists (see below)
+import { updateEvent } from '../../services/eventService';
+
+const STATUS = ['private','open','closed','archived'];
 
 export default function EventSettingsPopover({ event, onSaved, children }) {
   const toast = useToast();
-
-  // local working copies so toggles are controlled
-  const [isPublished, setIsPublished] = useState(event?.isPublished || 'draft'); // 'public' | 'draft'
-  const [status, setStatus] = useState(event?.status || 'closed');              // 'open' | 'closed'
+  const [status, setStatus] = useState(event?.status || 'private');
+  const [allowResponseEdit, setAllowResponseEdit] = useState(!!event?.allowResponseEdit);
   const [saving, setSaving] = useState(false);
 
-  async function handleSave() {
+  const handleSave = async () => {
     try {
       setSaving(true);
-
-      // Normalize just in case anything different comes in
-      const payload = {
-        isPublished: String(isPublished).toLowerCase() === 'public' ? 'public' : 'draft',
-        status: String(status).toLowerCase() === 'open' ? 'open' : 'closed',
-      };
-
-      // call backend
-      const updated = await updateEvent(event.eventId, payload);
-
+      await updateEvent(event.eventId || event.id, { status, allowResponseEdit }, { admin: true });
       toast({ status: 'success', title: 'Settings saved' });
-      // notify parent (row/table) so it refreshes its state
-      onSaved?.(updated || { ...event, ...payload });
-    } catch (err) {
-      const msg = err?.response?.data?.error || err.message || 'Save failed';
-      toast({ status: 'error', title: msg });
+      onSaved?.();
+    } catch (e) {
+      console.error(e);
+      toast({ status: 'error', title: 'Save failed', description: e?.message || String(e) });
     } finally {
       setSaving(false);
     }
-  }
+  };
 
   return (
     <Popover placement="bottom-end">
       <PopoverTrigger>{children}</PopoverTrigger>
-      <PopoverContent>
+      <PopoverContent w="360px">
         <PopoverArrow />
         <PopoverCloseButton />
-        <PopoverHeader>Event Settings</PopoverHeader>
-
+        <PopoverHeader fontWeight="semibold">Event Settings</PopoverHeader>
         <PopoverBody>
           <Stack spacing={4}>
             <FormControl>
-              <FormLabel>Visibility</FormLabel>
-              <Select
-                value={isPublished}
-                onChange={(e) => setIsPublished(e.target.value)}
-              >
-                <option value="draft">Private / Draft</option>
-                <option value="public">Published</option>
+              <FormLabel>Status</FormLabel>
+              <Select value={status} onChange={e => setStatus(e.target.value)}>
+                {STATUS.map(s => <option key={s} value={s}>{s.toUpperCase()}</option>)}
               </Select>
             </FormControl>
 
-            <FormControl display="flex" alignItems="center">
-              <FormLabel mb="0">Open for responses</FormLabel>
-              <Switch
-                isChecked={status === 'open'}
-                onChange={(e) => setStatus(e.target.checked ? 'open' : 'closed')}
-              />
+            <FormControl display="flex" alignItems="center" justifyContent="space-between">
+              <FormLabel mb="0">Allow response editing</FormLabel>
+              <Switch isChecked={allowResponseEdit} onChange={e => setAllowResponseEdit(e.target.checked)} />
             </FormControl>
           </Stack>
         </PopoverBody>
 
         <PopoverFooter display="flex" justifyContent="flex-end" gap={2}>
           <Button variant="ghost">Close</Button>
-          {/* ✅ ensure this calls the handler; do NOT rely on form submit here */}
           <Button colorScheme="blue" onClick={handleSave} isLoading={saving}>
             Save
           </Button>

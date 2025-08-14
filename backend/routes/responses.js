@@ -6,6 +6,9 @@ const { checkAdmin } = require('../middleware/auth');
 
 const router = express.Router({ mergeParams: true });
 
+// Toggle if edits should be allowed even when the event is closed/past.
+const EDIT_WHILE_CLOSED = true;
+
 // ---- Helpers ---------------------------------------------------------------
 function isPastNow(ev) {
   const now = new Date();
@@ -38,7 +41,7 @@ function isAdmin(req) {
 
 function getToken(req) {
   return (
-    req.headers['x-edit-token'] ||
+    (req.headers['x-edit-token'] || req.headers['X-Edit-Token']) ||
     req.query.token ||
     (req.body && req.body.token) ||
     ''
@@ -94,21 +97,22 @@ const ensureEventEditable = async (req, res, next) => {
     );
     if (!ev) return res.status(404).json({ error: 'event not found' });
 
-    // If you want edits allowed only while open, keep these checks.
-    // If you want edits even when closed/past, remove them.
-    if (String(ev.status || '').toLowerCase() !== 'open') {
-      return res.status(403).json({ error: 'Event is not accepting edits' });
-    }
-    if (ev.closeOn && new Date(ev.closeOn).getTime() <= Date.now()) {
-      return res.status(403).json({ error: 'Form closed' });
-    }
-    if (isPastNow(ev)) {
-      return res.status(403).json({ error: 'Event has ended' });
-    }
-
     if (!ev.allowResponseEdit) {
       return res.status(403).json({ error: 'editing responses disabled' });
     }
+
+    if (!EDIT_WHILE_CLOSED) {
+      if (String(ev.status || '').toLowerCase() !== 'open') {
+        return res.status(403).json({ error: 'Event is not accepting edits' });
+      }
+      if (ev.closeOn && new Date(ev.closeOn).getTime() <= Date.now()) {
+        return res.status(403).json({ error: 'Form closed' });
+      }
+      if (isPastNow(ev)) {
+        return res.status(403).json({ error: 'Event has ended' });
+      }
+    }
+
     next();
   } catch (err) {
     next(err);
@@ -116,6 +120,65 @@ const ensureEventEditable = async (req, res, next) => {
 };
 
 // ---- Routes ----------------------------------------------------------------
+
+// LIST (ADMIN) — place BEFORE the :responseId route
+// GET /api/events/:eventId/responses?admin=1
+router.get('/', checkAdmin, async (req, res, next) => {
+  try {
+    const eventId = +req.params.eventId;
+
+    const [rows] = await pool.query(
+      `SELECT
+         r.submissionId,
+         r.eventId,
+         r.createdAt,
+         p.firstName, p.lastName, p.email, p.phone
+       FROM Responses r
+       JOIN Participants p ON p.participantId = r.participantId
+       WHERE r.eventId = ?
+       ORDER BY r.createdAt DESC`,
+      [eventId]
+    );
+
+    if (!rows.length) return res.json([]);
+
+    const ids = rows.map(r => r.submissionId);
+    let answersBySubmission = {};
+    if (ids.length) {
+      const [answers] = await pool.query(
+        `SELECT responseId AS submissionId, questionId, answerText
+           FROM Answers
+          WHERE responseId IN (?)`,
+        [ids]
+      );
+      answersBySubmission = answers.reduce((acc, a) => {
+        (acc[a.submissionId] ||= []).push({
+          questionId: a.questionId,
+          answerText: a.answerText,
+        });
+        return acc;
+      }, {});
+    }
+
+    const out = rows.map(r => ({
+      submissionId: r.submissionId,
+      responseId: r.submissionId, // alias for UI compatibility
+      eventId: r.eventId,
+      createdAt: r.createdAt,
+      participant: {
+        firstName: r.firstName,
+        lastName:  r.lastName,
+        email:     r.email,
+        phone:     r.phone,
+      },
+      answers: answersBySubmission[r.submissionId] || [],
+    }));
+
+    res.json(out);
+  } catch (err) {
+    next(err);
+  }
+});
 
 // Create (returns { submissionId, editToken })
 router.post('/', ensureEventOpen, (req, res, next) => {
@@ -130,6 +193,51 @@ router.post('/', ensureEventOpen, (req, res, next) => {
   };
   return write.createResponse(req, res, next);
 });
+
+// List all responses for an event (admin)
+router.get('/', checkAdmin, async (req, res, next) => {
+  try {
+    const eventId = Number(req.params.eventId);
+    if (!eventId) return res.status(400).json({ error: 'Invalid eventId' });
+
+    const [rows] = await pool.query(
+      `SELECT r.submissionId, r.eventId, r.createdAt,
+              p.participantId, p.firstName, p.lastName, p.email, p.phone
+         FROM Responses r
+         JOIN Participants p ON p.participantId = r.participantId
+        WHERE r.eventId = ?
+        ORDER BY r.createdAt DESC`,
+      [eventId]
+    );
+
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// List all responses for an event (ADMIN)
+router.get('/', checkAdmin, async (req, res, next) => {
+  try {
+    const eventId = Number(req.params.eventId);
+    if (!Number.isInteger(eventId)) {
+      return res.status(400).json({ error: 'Invalid eventId' });
+    }
+    const [rows] = await pool.query(
+      `SELECT r.submissionId, r.eventId, r.createdAt,
+              p.participantId, p.firstName, p.lastName, p.email, p.phone
+         FROM Responses r
+         JOIN Participants p ON p.participantId = r.participantId
+        WHERE r.eventId = ?
+        ORDER BY r.createdAt DESC`,
+      [eventId]
+    );
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
 
 // Get one response (ADMIN)
 router.get('/:responseId', checkAdmin, async (req, res, next) => {
@@ -160,6 +268,36 @@ router.get('/:responseId', checkAdmin, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// Optional: Public fetch by token — for prefill/edit screens
+// GET /api/events/:eventId/responses/:responseId/view  (x-edit-token header or ?token=)
+router.get('/:responseId/view', async (req, res, next) => {
+  try {
+    const eventId = +req.params.eventId;
+    const responseId = +req.params.responseId;
+    const token = (getToken(req) || '').trim();
+
+    if (!token) return res.status(403).json({ error: 'missing token' });
+
+    const [[ok]] = await pool.query(
+      'SELECT 1 FROM Responses WHERE submissionId = ? AND eventId = ? AND editToken = ?',
+      [responseId, eventId, token]
+    );
+    if (!ok) return res.status(403).json({ error: 'invalid token' });
+
+    const [[resp]] = await pool.query(
+      `SELECT r.submissionId, r.eventId, p.firstName, p.lastName, p.email, p.phone
+         FROM Responses r JOIN Participants p USING(participantId)
+        WHERE r.submissionId = ? AND r.eventId = ?`,
+      [responseId, eventId]
+    );
+    const [answers] = await pool.query(
+      'SELECT questionId, answerText FROM Answers WHERE responseId = ?',
+      [responseId]
+    );
+    res.json({ ...resp, answers });
+  } catch (err) { next(err); }
 });
 
 // Update (ADMIN or token) + editable (no capacity check)
@@ -249,7 +387,6 @@ router.delete('/:responseId', async (req, res, next) => {
       if (!exists) return res.status(404).json({ error: 'response not found for this event' });
     }
 
-    // Optional: transaction for atomic delete across two tables
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
