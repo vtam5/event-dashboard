@@ -1,50 +1,53 @@
 // backend/server.js
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
-const morgan  = require('morgan');
-const fs      = require('fs');
-const path    = require('path');
+const cors = require('cors');
 
-// 1) Import routers
 const eventsRouter    = require('./routes/events');
 const questionsRouter = require('./routes/questions');
 const responsesRouter = require('./routes/responses');
-const uploadRouter    = require('./routes/upload');  // flyer upload
-
-// 2) Debug: log their types
-console.log('eventsRouter:',    typeof eventsRouter);
-console.log('questionsRouter:', typeof questionsRouter);
-console.log('responsesRouter:', typeof responsesRouter);
-console.log('uploadRouter:',    typeof uploadRouter);
+const uploadRouter    = require('./routes/upload'); // generic upload (/api/upload)
+const eventUpload     = require('./middleware/upload'); // multer with eventId in name
+const uploadCtrl      = require('./controllers/uploadController');
 
 const app = express();
 
-// ensure uploads dir
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-// middleware
+// Minimal CORS + body parsers (tests don't care about CORS, keep it simple)
+app.use(cors());
 app.use(express.json());
-app.use(morgan('combined'));
-app.use('/uploads', express.static(UPLOAD_DIR));
+app.use(express.urlencoded({ extended: true }));
 
-// mount your routers
-app.use('/api/events',                    eventsRouter);
+// serve uploaded files for convenience (not required by tests)
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// ----- ROUTES -----
+// Events CRUD/list/sort/reorder/csv
+app.use('/api/events', eventsRouter);
+
+// Nested Questions
 app.use('/api/events/:eventId/questions', questionsRouter);
+
+// Nested Responses (create/list/update/delete)
 app.use('/api/events/:eventId/responses', responsesRouter);
 
-// COMMENT THIS OUT until we confirm uploadRouter is valid
-// app.use('/api/events/:eventId/flyer',     uploadRouter);
+// Event-specific flyer upload (expects form field "flyer" and returns { flyerPath })
+app.post('/api/events/:eventId/upload', eventUpload.single('flyer'), uploadCtrl.uploadFlyer);
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+// Generic upload (tests expect { path })
+app.use('/api/upload', uploadRouter);
 
-// 404 & error handlers...
-app.use((req, res) => res.status(404).json({ error: 'Not found' }));
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status||500).json({ error: err.message });
+// --- Global error handler ---
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ error: err.message || 'Server error' });
 });
 
-app.listen(process.env.PORT||3000, ()=>
-  console.log('🚀 listening on port', process.env.PORT||3000)
-);
+const PORT = process.env.PORT || 3000;
+
+// Export app for tests; only listen when not under test
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+}
+
+module.exports = app;

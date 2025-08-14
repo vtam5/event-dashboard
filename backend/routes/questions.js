@@ -1,21 +1,65 @@
-// backend/routes/questions.js
 const express = require('express');
-const pool    = require('../db');
-const { body, param, validationResult } = require('express-validator');
+const { body, param } = require('express-validator');
+const pool = require('../db');
+const qc = require('../controllers/questionController');
+const { checkValidation } = require('../middleware/validation');
 
 const router = express.Router({ mergeParams: true });
 
-// GET /api/events/:eventId/questions
-router.get(
+// ---- Questions CRUD ----
+router.get('/', qc.listQuestions);
+
+router.post(
   '/',
-  [ param('eventId').isInt().withMessage('Invalid eventId') ],
+  [
+    body('questionText').isString().isLength({ min: 1 }),
+    body('questionType').isString().isLength({ min: 1 }),
+    checkValidation,
+  ],
+  qc.createQuestion
+);
+
+router.put(
+  '/:questionId',
+  [
+    param('questionId').isInt().toInt(),
+    body('questionText').optional().isString().isLength({ min: 1 }),
+    body('questionType').optional().isString().isLength({ min: 1 }),
+    checkValidation,
+  ],
+  qc.updateQuestion
+);
+
+router.delete(
+  '/:questionId',
+  [param('questionId').isInt().toInt(), checkValidation],
+  qc.deleteQuestion
+);
+
+// ---- Options CRUD ----
+const isTextType = (t) => {
+  const s = String(t || '').trim().toLowerCase();
+  return ['text','textarea','paragraph','shorttext','longtext','input'].includes(s);
+};
+
+const getQuestion = async (eventId, questionId) => {
+  const [[q]] = await pool.query(
+    'SELECT questionId, questionType FROM Questions WHERE eventId = ? AND questionId = ?',
+    [eventId, questionId]
+  );
+  return q || null;
+};
+
+// List options
+router.get(
+  '/:questionId/options',
+  [param('questionId').isInt().toInt(), checkValidation],
   async (req, res, next) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
     try {
-      const [rows] = await pool.execute(
-        'SELECT * FROM Questions WHERE eventId=? ORDER BY questionId',
-        [req.params.eventId]
+      const questionId = +req.params.questionId;
+      const [rows] = await pool.query(
+        'SELECT optionId as id, questionId, optionText FROM QuestionOptions WHERE questionId = ? ORDER BY optionId',
+        [questionId]
       );
       res.json(rows);
     } catch (err) {
@@ -24,57 +68,72 @@ router.get(
   }
 );
 
-// POST /api/events/:eventId/questions
+// Create option
 router.post(
-  '/',
+  '/:questionId/options',
   [
-    param('eventId').isInt(),
-    body('questionText').trim().notEmpty(),
-    body('questionType')
-      .isIn(['text','textarea','checkbox','dropdown']),
-    body('isRequired').optional().isBoolean()
+    param('questionId').isInt().toInt(),
+    body('optionText').isString().isLength({ min: 1 }),
+    checkValidation,
   ],
   async (req, res, next) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
     try {
-      const { questionText, questionType, isRequired=false } = req.body;
-      const [r] = await pool.execute(
-        `INSERT INTO Questions
-           (eventId,questionText,questionType,isRequired)
-         VALUES (?,?,?,?)`,
-        [req.params.eventId, questionText, questionType, isRequired]
+      const eventId = +req.params.eventId;
+      const questionId = +req.params.questionId;
+      const { optionText } = req.body;
+
+      const q = await getQuestion(eventId, questionId);
+      if (!q) return res.status(404).json({ error: 'question not found' });
+      if (isTextType(q.questionType)) {
+        return res.status(400).json({ 
+          id: questionId,
+          error: 'options not allowed for text-type questions' 
+        });
+      }
+
+      const [result] = await pool.query(
+        'INSERT INTO QuestionOptions (questionId, optionText) VALUES (?, ?)',
+        [questionId, optionText]
       );
-      res.status(201).json({ questionId: r.insertId });
+
+      const [[newOption]] = await pool.query(
+        'SELECT optionId as id, questionId, optionText FROM QuestionOptions WHERE optionId = ?',
+        [result.insertId]
+      );
+
+      res.status(201).json(newOption);
     } catch (err) {
       next(err);
     }
   }
 );
 
-// PUT /api/events/:eventId/questions/:questionId
+// Update option
 router.put(
-  '/:questionId',
+  '/:questionId/options/:optionId',
   [
-    param('eventId').isInt(),
-    param('questionId').isInt(),
-    body('questionText').trim().notEmpty(),
-    body('questionType')
-      .isIn(['text','textarea','checkbox','dropdown']),
-    body('isRequired').optional().isBoolean()
+    param('questionId').isInt().toInt(),
+    param('optionId').isInt().toInt(),
+    body('optionText').optional().isString().isLength({ min: 1 }),
+    checkValidation,
   ],
   async (req, res, next) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
     try {
-      const { questionText, questionType, isRequired } = req.body;
-      const [r] = await pool.execute(
-        `UPDATE Questions
-           SET questionText=?, questionType=?, isRequired=?
-         WHERE questionId=? AND eventId=?`,
-        [questionText, questionType, isRequired, req.params.questionId, req.params.eventId]
+      const eventId = +req.params.eventId;
+      const questionId = +req.params.questionId;
+      const optionId = +req.params.optionId;
+
+      const q = await getQuestion(eventId, questionId);
+      if (!q) return res.status(404).json({ error: 'question not found' });
+      if (isTextType(q.questionType)) {
+        return res.status(400).json({ error: 'options not allowed for text-type questions' });
+      }
+
+      const { optionText = null } = req.body;
+      const [r] = await pool.query(
+        'UPDATE QuestionOptions SET optionText = COALESCE(?, optionText) WHERE optionId = ? AND questionId = ?',
+        [optionText, optionId, questionId]
       );
-      if (!r.affectedRows) return res.status(404).json({ error: 'Not found' });
       res.json({ updated: r.affectedRows });
     } catch (err) {
       next(err);
@@ -82,23 +141,22 @@ router.put(
   }
 );
 
-// DELETE /api/events/:eventId/questions/:questionId
+// Delete option
 router.delete(
-  '/:questionId',
+  '/:questionId/options/:optionId',
   [
-    param('eventId').isInt(),
-    param('questionId').isInt()
+    param('questionId').isInt().toInt(),
+    param('optionId').isInt().toInt(),
+    checkValidation,
   ],
   async (req, res, next) => {
-    const errs = validationResult(req);
-    if (!errs.isEmpty()) return res.status(400).json({ errors: errs.array() });
     try {
-      const [r] = await pool.execute(
-        `DELETE FROM Questions
-         WHERE questionId=? AND eventId=?`,
-        [req.params.questionId, req.params.eventId]
+      const questionId = +req.params.questionId;
+      const optionId = +req.params.optionId;
+      const [r] = await pool.query(
+        'DELETE FROM QuestionOptions WHERE optionId = ? AND questionId = ?',
+        [optionId, questionId]
       );
-      if (!r.affectedRows) return res.status(404).json({ error: 'Not found' });
       res.json({ deleted: r.affectedRows });
     } catch (err) {
       next(err);

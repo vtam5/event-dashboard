@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests
+        env:
+          # override so tests won’t accidentally hit a real DB
+          DB_HOST: 127.0.0.1
+          DB_USER: root
+          DB_PASSWORD: ''
+          DB_NAME: event_dashboard_test
+        run: npm test

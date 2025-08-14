@@ -1,102 +1,116 @@
 // backend/routes/events.js
 const express = require('express');
-const pool    = require('../db');
-const multer  = require('multer');
-const router  = express.Router();
+const { body, param } = require('express-validator');
+const pool = require('../db');
+const eventsCtrl = require('../controllers/eventController');
+const { checkValidation } = require('../middleware/validation');
 
-// Multer setup (uploads folder)
-const upload = multer({ dest: 'uploads/' });
+const router = express.Router();
 
-// Simple admin-check (replace with real auth later)
-const ADMIN_USERNAME = 'admin';
-const ADMIN_PASSWORD = 'test123';
-async function checkAdmin(req, res, next) {
-  const [rows] = await pool.query(
-    'SELECT 1 FROM Admins WHERE username=? AND password=?',
-    [ADMIN_USERNAME, ADMIN_PASSWORD]
-  );
-  if (!rows.length) return res.status(403).json({ error: 'Not authorized' });
-  next();
-}
+// Simple admin guard via query (?admin=1 or ?admin=true)
+const requireAdmin = (req, res, next) => {
+  const v = String(req.query.admin || '').toLowerCase();
+  if (v === '1' || v === 'true') return next();
+  return res.status(403).json({ error: 'admin=1 required' });
+};
 
-// GET /api/events?admin=1
-router.get('/', async (req, res, next) => {
-  try {
-    const isAdmin = req.query.admin === '1';
-    let sql = `
-      SELECT e.eventId, e.name, e.date, e.time, e.location,
-             e.description, e.flyerPath, e.isPublished,
-             COUNT(r.submissionId) AS participantCount
-      FROM Events e
-      LEFT JOIN Responses r ON e.eventId=r.eventId
-    `;
-    if (!isAdmin) {
-      sql += ` WHERE e.isPublished='public' `;
+// List
+router.get('/', eventsCtrl.listEvents);
+
+// Create (admin only)
+router.post('/', requireAdmin, eventsCtrl.createEvent);
+
+// CSV export (falls back to inline exporter if controller fn not present)
+router.get(
+  '/export',
+  eventsCtrl.exportCSV
+  || eventsCtrl.exportEventsCSV
+  || eventsCtrl.exportAllEvents
+  || (async (_req, res, next) => {
+      try {
+        const [rows] = await pool.query(
+          `SELECT eventId, name, date, time, location, description, status, createdAt
+             FROM Events
+            ORDER BY createdAt DESC`
+        );
+        const cols = [
+          'eventId','name','date','time','location','description','status','createdAt'
+        ];
+        const esc = (s) =>
+          s == null
+            ? ''
+            : /[",\n]/.test(String(s))
+              ? `"${String(s).replace(/"/g, '""')}"`
+              : String(s);
+
+        const header = cols.join(',');
+        const lines = rows.map(r => cols.map(c => esc(r[c])).join(','));
+        const csv = [header, ...lines].join('\n');
+
+        res.type('text/csv').send(csv);
+      } catch (e) {
+        next(e);
+      }
+    })
+);
+
+// Reorder (admin only) — place BEFORE the :id route
+router.put(
+  '/reorder',
+  [
+    requireAdmin,
+    body('order')
+      .custom(arr => Array.isArray(arr) && arr.length > 0 && arr.every(Number.isInteger))
+      .withMessage('order must be a non-empty array of integers'),
+    checkValidation,
+  ],
+  async (req, res, next) => {
+    const conn = await pool.getConnection();
+    try {
+      const { order } = req.body;
+
+      // Check duplicates
+      if (new Set(order).size !== order.length) {
+        return res.status(400).json({ success: false, error: 'Duplicate IDs in order' });
+      }
+
+      // Ensure all IDs exist
+      const [existing] = await conn.query(
+        'SELECT eventId FROM Events WHERE eventId IN (?)',
+        [order]
+      );
+      if (existing.length !== order.length) {
+        return res.status(400).json({ success: false, error: 'One or more events not found' });
+      }
+
+      await conn.beginTransaction();
+      for (let i = 0; i < order.length; i++) {
+        await conn.query('UPDATE Events SET sortOrder = ? WHERE eventId = ?', [i + 1, order[i]]);
+      }
+      await conn.commit();
+
+      res.json({ success: true, updated: order.length });
+    } catch (err) {
+      try { await conn.rollback(); } catch {}
+      next(err);
+    } finally {
+      conn.release();
     }
-    sql += ` GROUP BY e.eventId ORDER BY e.eventId DESC`;
-    const [rows] = await pool.query(sql);
-    res.json(rows);
-  } catch (err) {
-    next(err);
   }
-});
+);
 
-// POST /api/events
-router.post('/', checkAdmin, async (req, res, next) => {
-  try {
-    const { name, date, time=null, location=null, description=null } = req.body;
-    if (!name || !date) {
-      return res.status(400).json({ error: 'Name and date required' });
-    }
-    const [r] = await pool.query(
-      `INSERT INTO Events
-         (name,date,time,location,description,flyerPath,isPublished,allowResponseEdit)
-       VALUES (?, ?, ?, ?, ?, NULL, 'draft', 0)`,
-      [name, date, time, location, description]
-    );
-    res.status(201).json({ eventId: r.insertId });
-  } catch (err) {
-    next(err);
-  }
-});
+// Update (admin only)
+router.put(
+  '/:id(\\d+)',
+  [requireAdmin, param('id').isInt().toInt(), checkValidation],
+  eventsCtrl.updateEvent
+);
 
-// PUT /api/events/:id
-router.put('/:id', checkAdmin, async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { name, date, time, location, description, isPublished, allowResponseEdit } = req.body;
-    const valid = ['draft','private','public'];
-    if (isPublished && !valid.includes(isPublished)) {
-      return res.status(400).json({ error: 'Invalid state' });
-    }
-    await pool.query(
-      `UPDATE Events
-         SET name            = COALESCE(?,name),
-             date            = COALESCE(?,date),
-             time            = COALESCE(?,time),
-             location        = COALESCE(?,location),
-             description     = COALESCE(?,description),
-             isPublished     = COALESCE(?,isPublished),
-             allowResponseEdit = COALESCE(?,allowResponseEdit)
-       WHERE eventId = ?`,
-      [name,date,time,location,description,isPublished,allowResponseEdit,id]
-    );
-    res.json({ success: true });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// DELETE /api/events/:id
-router.delete('/:id', checkAdmin, async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const [r] = await pool.query('DELETE FROM Events WHERE eventId=?', [id]);
-    if (!r.affectedRows) return res.status(404).json({ error: 'Not found' });
-    res.json({ success: true });
-  } catch (err) {
-    next(err);
-  }
-});
+// Delete (admin only)
+router.delete(
+  '/:id(\\d+)',
+  [requireAdmin, param('id').isInt().toInt(), checkValidation],
+  eventsCtrl.deleteEvent
+);
 
 module.exports = router;
